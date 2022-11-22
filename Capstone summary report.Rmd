@@ -1,0 +1,344 @@
+---
+title: "House Sale Prediction"
+author: "Joel"
+date: "2022-11-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+Summary:
+This data from Kaggle is referred to as the Ames dataset.  Is is composed mostly of single family suburban dwellings that were sold in Ames, Iowa from 2006-2010.  It consists of 81 varibables and a total 1456 objected composed of character, integer and numerical data. 
+The goal is to use the train data to build a model to predict the SalePrice (the final variable) in the test set. 
+The purpose of this is to attempt to minimize both the RMSE and run-time in order to have a tool both accurate and efficient at assessing house costs.
+
+The data is already split into two sets, a train set and a test set.  The train set consists of 81 variables and a total of 1456 objects composed of either character, numeric or integer type information.  However, due to it being taken from a contest dataset, only the train set will be used and split into train and test sets.  The test set does not have the SalePrice variable included unfortunately. 
+The data is referred to as the Ames dataset. It is mostly composed of single family suburban dwellings, which were sold in Ames, Iowa in the period 2006-2010.
+The data was obtained from kaggle.com. The links are below, though you should not need them.
+
+https://www.kaggle.com/datasets/rsizem2/house-prices-ames-cleaned-dataset?resource=download&select=clean_train.csv
+https://www.kaggle.com/datasets/rsizem2/house-prices-ames-cleaned-dataset?resource=download&select=clean_test.csv
+
+The goal is to use the train data to build a model to predict the SalePrice (the final variable) in the test set, while attempting to minimize both the RMSE and run-time in order to have a tool both accurate and efficient at assessing house costs.
+
+
+```{r}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repors = "http://cran.us.r-project.org" )
+if(!require(bayesplot)) install.packages("bayesplot", repors = "http://cran.us.r-project.org" )
+if(!require(boot)) install.packages("boot", repors = "http://cran.us.r-project.org" )
+if(!require(dbarts)) install.packages("dbarts", repors = "http://cran.us.r-project.org" )
+if(!require(cowplot)) install.packages("cowplot", repors = "http://cran.us.r-project.org" )
+if(!require(rJava)) install.packages("rJava", repors = "http://cran.us.r-project.org" )
+if(!require(bartMachine)) install.packages("bartMachine", repors = "http://cran.us.r-project.org" )
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(caret)
+library(data.table)
+library(randomForest)
+library(bayesplot)
+library(boot)
+library(cowplot)
+library(dbarts)
+library(rJava)
+library(bartMachine)
+options(java.parameters = "-Xmx4g")
+
+```
+
+Exploration and Visualization:
+
+First we ready the data for exploration. The data well be imported in from the github links below. 
+
+```{r}
+dl <- tempfile()
+download.file("https://raw.githubusercontent.com/storyhub/HousingCapstone/main/clean_train.csv", dl)
+house_train <- read.csv(dl)
+str(house_train)
+dl2 <- tempfile()
+download.file("https://raw.githubusercontent.com/storyhub/HousingCapstone/main/clean_test.csv", dl2)
+house_test <- read.csv(dl2)
+str(house_test)
+
+head(house_train)
+names(house_train)
+dim(house_train)
+summary(house_train) 
+```
+
+Many variables have a median of 0, but a non-zero mean and a relatively higher max.  This suggests there may few occurances of a particular feature(s) but perhaps they are still relevant. 
+
+Here we look at distribution of variable of interest.
+
+```{r}
+median(house_train$SalePrice) #The median house cost is 163000
+mad(house_train$SalePrice) #The median absolute deviation is about 56000
+house_train %>% 
+  ggplot(aes(SalePrice/1000)) + geom_boxplot()
+```
+
+Next we check for columns with NAs 
+
+```{r}
+colSums(is.na(house_train))
+```
+
+In the readme this value is described as "Linear feet of street connected to property". 
+Let's find out more about LotFrontage before we decide on what to do with the NAs
+
+```{r}
+class(house_train$LotFrontage)
+filter(house_train, house_train$LotFrontage == 0)
+table(house_train$LotFrontage)
+```
+
+It looks like there are no instances where LotFrontage = 0, so the NAs are likely instances where the property does not directly abut a street.
+We will change those instances to a quantity, 0, rather than leave it as NA.
+
+```{r}
+house_train <- house_train %>% mutate_at(vars("LotFrontage"), ~replace_na(.,0))
+is.na(house_train$LotFrontage)
+```
+
+Success, the NAs have been replaced by 0's.
+
+Next we will plot by category to get any idea of what the rest of the many variable distributions look like. 
+We plot the character content variables first. 
+
+```{r}
+distribution_plots <- lapply(names(house_train), function(x){
+  plot <- 
+    ggplot(house_train) +
+    aes_string(x)
+  
+  if(is.numeric(house_train[[x]])) {
+    plot <- plot + geom_histogram()
+    
+  } else {
+    plot <- plot + geom_bar()
+  } 
+  
+})
+
+plot_grid(plotlist = distribution_plots)
+
+character_var <- house_train %>% dplyr::select_if(is.character)
+  cv_list <- names(character_var)
+
+  distribution_character <- lapply(cv_list, function(x){
+    plot <- 
+      ggplot(house_train) +
+      aes_string(x)
+  plot <- plot + geom_bar() + theme(axis.text.x = element_text(angle = 90))
+    
+  })
+  
+  plot_grid(plotlist = distribution_character)
+```
+  
+Here we plot integer variables.
+
+```{r}
+integer_var <- house_train %>% dplyr::select_if(is.integer)
+  int_list <- names(integer_var)  
+  
+  distribution_integer <- lapply(int_list, function(x){
+    plot <- 
+      ggplot(house_train) +
+      aes_string(x)
+    plot <- plot + geom_histogram() + theme(axis.text.x = element_text(angle = 90))
+    
+  })
+  
+  plot_grid(plotlist = distribution_integer)
+```  
+
+Finally, here area plots for numeric variables.  There is some overlap with the integers. 
+
+```{r}
+numeric_var <- house_train %>% dplyr::select_if(is.numeric)
+  num_list <- names(numeric_var)
+
+  distribution_numeric <- lapply(num_list, function(x){
+    plot <- 
+      ggplot(house_train) +
+      aes_string(x)
+    plot <- plot + geom_histogram() + theme(axis.text.x = element_text(angle = 90))
+    
+  })
+  
+  plot_grid(plotlist = distribution_numeric)
+```
+
+There are many variables that appear to have very low variance. 
+
+```{r}
+nnz_var <- nearZeroVar(house_train, names = TRUE)
+nnz_var
+nnz_noname <- nearZeroVar(house_train)
+nnz_noname
+
+distribution_nnz <- lapply(nnz_var, function(x){
+  plot <- 
+    ggplot(house_train) +
+    aes_string(x)
+  plot <- plot + geom_dotplot() + theme(axis.text.x = element_text(angle = 90))
+  
+})
+
+plot_grid(plotlist = distribution_nnz)
+```  
+
+There are a number of "quality" assessment variables.  It appears to be a subjective assessment made of particular features rather than just identifying the presence or size/type of a particular feature.
+
+```{r}
+quality_vars <- house_train %>% ls(pattern = "Q")
+cat(quality_vars)
+condition_vars <- house_train %>% ls(pattern = "Cond")
+```
+
+Condition 1 and 2 and Sale condition are not quality assessments. We'll remove those from the list. 
+
+```{r}
+cat(condition_vars)
+str(condition_vars)
+condition_vars <- condition_vars[condition_vars != "Condition1"]
+condition_vars <- condition_vars[condition_vars != "Condition2"]
+condition_vars <- condition_vars[condition_vars != "SaleCondition"]
+
+subjective_vars <- append(quality_vars, condition_vars)
+cat(subjective_vars)
+```
+
+Now we'll split the dataset into train and test sets.
+Sometimes character data can be problematic, we'll change it to factors first. 
+
+```{r}
+house_train <- house_train %>% mutate_if(is.character, as.factor)
+house_index <- createDataPartition(y = house_train$SalePrice, times = 1, p = 0.2, list = FALSE)
+house_trainer <- house_train[-house_index,]
+small_test <- house_train[house_index,]
+```
+
+The 81st column is the SaleSprice 
+
+```{r}
+head(house_train[81])
+```
+
+We'll establish the definition of RMSE for the validation step later on. 
+
+```{r}
+RMSE <- function(true_price, predicted_price){
+  sqrt(mean((true_price - predicted_price)^2))
+}
+true_price <- small_test$SalePrice
+```
+
+Modeling:
+
+A random forest and a BART model will be used.
+A Bayesian Additive Regression Tree model is another ensemble of trees model that is similar to gradient boosting models.  However, it weakens the effect of any given tree by its priors, attempting to decrease the risk of over-fitting that sometimes plague gradient boosting or forest models. Whereas random forest uses subsets of the data to build trees, which are combined to form predictions, BART uses a set number of small trees that weakly influence the result.  
+
+
+First Model:
+Develop a random forest model.
+Parameters to help control for low variance variables and highly correlated variables have been set in order to reduce computational resources for parameters with little value. For now the ntree value is kept low to reduce computational expense. Cross-validation measures are also included within the model. 
+We then check the results and identify which variables are considered most important by the model. 
+In the R-script more steps are described, but here the first and final RF models are summarized.  
+
+```{r}
+random_house <- train(house_trainer[-81], house_trainer$SalePrice, method = "rf", ntree = 50, preProcess = c("zv", "corr"), trControl = trainControl(method = "cv", number = 25, p = .9))
+min(random_house$results$RMSE)
+random_house$finalModel
+varImp(random_house)
+plot(varImp(random_house))
+```
+
+This took about 7 min to run.  Let's see if we can reduce the number of variables to improve run-time without losing much predictive value. 
+Again, in the R-script this is demonstrated more step-wise, but we will skip ahead to the final model settled on. 
+
+```{r}
+final_variables <- house_trainer %>% dplyr::select(OverallQual, GrLivArea, ExterQual,
+                                                  GarageCars,
+                                                  X1stFlrSF,
+                                                  GarageArea,
+                                                  TotalBsmtSF,
+                                                  BsmtQual,
+                                                  KitchenQual,
+                                                  BsmtFinSF1,
+                                                  LotArea,
+                                          -        TotRmsAbvGrd,
+                                                  YearBuilt,
+                                                  X2ndFlrSF,
+                                                  FireplaceQu,
+                                                  FullBath,
+                                                  YearRemodAdd)
+final_random_house <-  train(final_variables, house_trainer$SalePrice, metric = "RMSE", method = "rf", ntree = 150, preProcess = c("corr"), tuneLength = 25, trControl = trainControl(method = "cv"))
+min(final_random_house$results$RMSE)
+varImp(final_random_house)$importance
+plot(final_random_house)
+final_random_house$finalModel
+```
+
+This model ran in about 3 minutes had similar predictive value to our initial model with an RMSE of around 20000.  This is maybe not so useful to individuals on a budget looking for a bargain, but perhaps could serve those looking at higher cost purchases. 
+
+Bart Model- While BartMachine is in fact available in the caret package currently, there seems to be better control of it using it on its own. Controls were set in place to reduce memory usage, though it slowed down the processing.  On a machine with more RAM, this would be less of an issue.
+We can also look at what variables/features seemed to have greater importance to the model, like with RF.  Many of those important variables are similar in both models. 
+```{r}
+machine_house_more <- bartMachine(house_trainer[-81], house_trainer$SalePrice, num_trees = 100, impute_missingness_with_rf_impute =TRUE, mem_cache_for_speed = FALSE, flush_indices_to_save_RAM = TRUE)
+summary(machine_house_more)
+bart_choices <- investigate_var_importance(machine_house_more, num_replicates_for_avg = 20)
+head(bart_choices$avg_var_props, n = 15L)
+```
+
+The initial performance appears better than the RF model.  More trials and strategies were employed in the R script.
+ 
+cross-validate, ~2.5 min
+```{r}
+bart_cv <- function(house_trainer, ind){
+  data <- house_trainer[ind,] 
+  output <- bartMachine(house_trainer[-81], house_trainer$SalePrice, num_trees = 100, impute_missingness_with_rf_impute =TRUE, mem_cache_for_speed = FALSE, flush_indices_to_save_RAM = TRUE)
+  sqrt(mean((resid(output))^2)) 
+}
+bcv_output <- boot(data = house_trainer, statistic = bart_cv, R = 10)
+plot(bcv_output)
+```
+The results appear similar to the original model.
+
+impute_missingness_with_rf_impute =TRUE was attempted to be used to assist with the slight differences in low frequency occurrences between the test and train sets, but predict complained of row differences, so it had to be removed. 
+
+```{r}
+final_bart_house <- bartMachine(house_trainer[-81], house_trainer$SalePrice, num_trees = 100, mem_cache_for_speed = FALSE, flush_indices_to_save_RAM = TRUE)
+```
+
+Results:
+
+Test the models against the holdout data
+
+RF
+```{r}
+final_random_pred <- predict(final_random_house, small_test)
+RMSE(true_price, final_random_pred)
+```
+BART
+```{r}
+
+bart_pred <- bart_predict_for_test_data(final_bart_house, small_test[-81], small_test$SalePrice)
+bart_pred$rmse
+```
+
+Conclusion
+
+The results ended up being about the same with both models, though BART seemed to perform a little better and faster than random forest, though the smaller RMSE may be due to random variablilty as well.  Perhaps more of difference would be determined if more data was available. 
+It could be because I have had more practice with random forest and caret, but it does seem more new-user friendly than BartMachine or dbarts (this package was abandoned because of errors with predict I could not solve.)
+
+The models, as noted above, may be useful in aiding an estimation for a price with data contextualized for a particular region, but are likely not very helpful in lower cost houses.  
+
+I do plan on doing more research in the use of, and which situations they are ideal for, BART style models and interpreting the other aspects of its output.  For example, L2 loss function minimizes the squared differences between the estimated and existing target values, helping you determine how much outliers are effecting your model. 
